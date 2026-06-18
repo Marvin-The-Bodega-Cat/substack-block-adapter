@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 from substack_block_adapter.cli import main
@@ -107,6 +108,35 @@ def test_fetch_feed_parses_substack_rss(monkeypatch):
     assert post["canonical_url"] == "https://demo.substack.com/p/latest-post"
     assert post["post_date"] == "2026-06-15T12:32:55Z"
     assert result.offset_probe == [{"offset": 0, "returned": 1, "new": 1}]
+
+
+def test_fetch_feed_can_use_rss_webhook(monkeypatch):
+    rss = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0"><channel>
+      <item><title>Via VPS</title><link>https://demo.substack.com/p/via-vps</link><guid>vps</guid><pubDate>Mon, 15 Jun 2026 12:32:55 GMT</pubDate></item>
+    </channel></rss>"""
+    calls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"body_base64": base64.b64encode(rss.encode()).decode()}).encode()
+
+    def fake_urlopen(req, timeout=60):
+        calls.append((req.full_url, json.loads(req.data.decode()), req.headers.get("Authorization")))
+        return FakeResponse()
+
+    monkeypatch.setenv("SUBSTACK_BLOCK_RSS_WEBHOOK_URL", "https://watcher.example/rss/fetch")
+    monkeypatch.setenv("SUBSTACK_BLOCK_RSS_WEBHOOK_TOKEN", "secret")
+    monkeypatch.setattr("substack_block_adapter.substack.urllib.request.urlopen", fake_urlopen)
+    result = fetch_feed("demo.substack.com")
+    assert result.posts[0]["title"] == "Via VPS"
+    assert calls == [("https://watcher.example/rss/fetch", {"url": "https://demo.substack.com/feed", "timeout": 60}, "Bearer secret")]
 
 
 def test_jina_feed_markdown_fallback_parser():

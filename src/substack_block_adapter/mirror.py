@@ -218,7 +218,7 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
         "block_id": block_id,
         "title": f"Substack mirror: {publication}",
         "created_at": generated_at,
-        "source_adapter": "substack-block-adapter@0.2.1",
+        "source_adapter": "substack-block-adapter@0.2.2",
         "source_config_fingerprint": fingerprint,
         "source_config": config.normalized_for_hash(),
         "records": [r.to_dict() for r in records],

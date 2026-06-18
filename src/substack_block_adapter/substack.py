@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import email.utils
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -12,7 +14,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-USER_AGENT = "Mozilla/5.0 (compatible; substack-block-adapter/0.2.1; +https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
+USER_AGENT = "Mozilla/5.0 (compatible; substack-block-adapter/0.2.2; +https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
 
 
 class FetchError(RuntimeError):
@@ -61,6 +63,36 @@ def get_text(url: str, timeout: int = 30) -> str:
             return resp.read().decode("utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover
         raise FetchError(f"failed to fetch text {url}: {exc}") from exc
+
+
+def get_text_via_rss_webhook(url: str, timeout: int = 60) -> str:
+    webhook_url = os.environ.get("SUBSTACK_BLOCK_RSS_WEBHOOK_URL", "").strip()
+    token = os.environ.get("SUBSTACK_BLOCK_RSS_WEBHOOK_TOKEN", "").strip()
+    if not webhook_url:
+        raise FetchError("SUBSTACK_BLOCK_RSS_WEBHOOK_URL is not set")
+    if not token:
+        raise FetchError("SUBSTACK_BLOCK_RSS_WEBHOOK_TOKEN is not set")
+    payload = json.dumps({"url": url, "timeout": min(timeout, 60)}).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
+        data=payload,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        encoded = data.get("body_base64")
+        if not encoded:
+            raise FetchError(f"RSS webhook response missing body_base64 for {url}")
+        return base64.b64decode(encoded).decode("utf-8", errors="replace")
+    except Exception as exc:  # pragma: no cover - network-specific
+        raise FetchError(f"failed to fetch text via RSS webhook {webhook_url} for {url}: {exc}") from exc
 
 
 def archive_api_url(publication: str, offset: int) -> str:
@@ -135,7 +167,10 @@ def fetch_feed(publication: str) -> ArchiveResult:
     publication = normalize_publication(publication)
     feed_url = f"{publication}/feed"
     try:
-        xml_text = get_text(feed_url)
+        if os.environ.get("SUBSTACK_BLOCK_RSS_WEBHOOK_URL", "").strip():
+            xml_text = get_text_via_rss_webhook(feed_url)
+        else:
+            xml_text = get_text(feed_url)
         return parse_feed_xml(xml_text)
     except Exception as direct_exc:
         # GitHub-hosted runners can receive 403s from Substack even for /feed.
