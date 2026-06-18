@@ -1,0 +1,4 @@
+publication = "https://example.substack.com"
+out = "mirror"
+block_id = "example-substack"
+fetch_bodies = false

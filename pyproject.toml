@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "substack-block-adapter"
+version = "0.1.0"
+description = "Mirror a Substack into a GitHub repository and freeze it as a Data Mine block."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Marvin"}]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+substack-block = "substack_block_adapter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

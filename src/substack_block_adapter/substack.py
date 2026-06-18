@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import json
+import re
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from typing import Any
+
+
+USER_AGENT = "substack-block-adapter/0.1 (+https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
+
+
+class FetchError(RuntimeError):
+    pass
+
+
+@dataclass
+class ArchiveResult:
+    posts: list[dict[str, Any]]
+    offset_probe: list[dict[str, int]]
+
+
+def normalize_publication(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("publication is required")
+    if not value.startswith(("http://", "https://")):
+        value = "https://" + value
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.netloc:
+        raise ValueError(f"invalid publication URL: {value}")
+    scheme = "https"
+    return urllib.parse.urlunparse((scheme, parsed.netloc, "", "", "", "")).rstrip("/")
+
+
+def slugify(value: str, fallback: str = "post") -> str:
+    value = (value or fallback).lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+    return value or fallback
+
+
+def get_json(url: str, timeout: int = 30) -> Any:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw)
+    except Exception as exc:  # pragma: no cover - exact urllib subclasses vary
+        raise FetchError(f"failed to fetch JSON {url}: {exc}") from exc
+
+
+def get_text(url: str, timeout: int = 30) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:  # pragma: no cover
+        raise FetchError(f"failed to fetch text {url}: {exc}") from exc
+
+
+def archive_api_url(publication: str, offset: int) -> str:
+    return f"{publication}/api/v1/archive?sort=new&search=&offset={offset}"
+
+
+def fetch_archive(publication: str, *, step: int = 20, max_pages: int = 1000) -> ArchiveResult:
+    publication = normalize_publication(publication)
+    seen: set[str] = set()
+    posts: list[dict[str, Any]] = []
+    probe: list[dict[str, int]] = []
+    for page in range(max_pages):
+        offset = page * step
+        data = get_json(archive_api_url(publication, offset))
+        if not isinstance(data, list):
+            raise FetchError(f"archive API returned {type(data).__name__}, expected list")
+        new_count = 0
+        for post in data:
+            if not isinstance(post, dict):
+                continue
+            pid = str(post.get("id") or post.get("slug") or post.get("canonical_url") or len(posts))
+            if pid in seen:
+                continue
+            seen.add(pid)
+            posts.append(post)
+            new_count += 1
+        probe.append({"offset": offset, "returned": len(data), "new": new_count})
+        if new_count == 0:
+            break
+    return ArchiveResult(posts=posts, offset_probe=probe)
+
+
+def fetch_sitemap_post_urls(publication: str) -> list[str]:
+    publication = normalize_publication(publication)
+    xml_text = get_text(f"{publication}/sitemap.xml")
+    root = ET.fromstring(xml_text)
+    urls: list[str] = []
+    for loc in root.iter():
+        if loc.tag.endswith("loc") and loc.text:
+            u = loc.text.strip()
+            if "/p/" in urllib.parse.urlparse(u).path:
+                urls.append(canonicalize_post_url(u))
+    return sorted(set(urls))
+
+
+def canonicalize_post_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    return urllib.parse.urlunparse((parsed.scheme or "https", parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
+def post_url(publication: str, post: dict[str, Any]) -> str:
+    raw = post.get("canonical_url") or post.get("url")
+    if raw:
+        return canonicalize_post_url(str(raw))
+    slug = post.get("slug") or slugify(str(post.get("title") or post.get("id") or "post"))
+    return f"{normalize_publication(publication)}/p/{slug}"
+
+
+class BodyTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.capture = False
+        self.parts: list[str] = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style", "noscript"}:
+            self.skip_depth += 1
+        attrs_dict = {k: v or "" for k, v in attrs}
+        cls = attrs_dict.get("class", "")
+        if tag in {"article", "main"} or "body" in cls or "post" in cls:
+            self.capture = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript"} and self.skip_depth:
+            self.skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        text = " ".join(data.split())
+        if text and (self.capture or len(text) > 80):
+            self.parts.append(text)
+
+    def text(self) -> str:
+        return "\n\n".join(self.parts)
+
+
+def fetch_body_text(url: str) -> str:
+    parser = BodyTextParser()
+    parser.feed(get_text(url))
+    return parser.text()
