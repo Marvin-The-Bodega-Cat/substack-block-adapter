@@ -14,10 +14,12 @@ Sources are not blocks. Sources are where reality keeps changing its story.
 
 `substack-block`:
 
-1. paginates the Substack archive API;
+1. supports two source modes:
+   - `archive`: paginates the Substack archive API for a full initial cut;
+   - `rss_latest`: reads Substack's built-in `/feed` RSS for ongoing latest-post watchers;
 2. cross-checks discovered post URLs against `sitemap.xml` when available;
 3. writes one markdown file per post;
-4. writes raw archive JSON per post;
+4. writes raw source JSON per post;
 5. writes a Data Mine compatible `block.json` with ordered `SourceRecord` rows;
 6. writes scrape/update receipts;
 7. supports a weekly GitHub Actions watcher that commits newly discovered posts.
@@ -31,7 +33,7 @@ python3 -m pip install -e .
 ## Quick start
 
 ```bash
-substack-block init-config --publication https://example.substack.com --out mirror
+substack-block init-config --publication https://example.substack.com --out mirror --source-mode rss_latest
 substack-block watch --config substack-block.toml
 ```
 
@@ -41,7 +43,8 @@ Or run directly:
 substack-block mirror \
   --publication https://example.substack.com \
   --out mirror \
-  --block-id example-substack-weekly
+  --block-id example-substack-weekly \
+  --source-mode archive
 ```
 
 ## Repository mirror shape
@@ -78,9 +81,12 @@ publication = "https://example.substack.com"
 out = "mirror"
 block_id = "example-substack"
 fetch_bodies = false
+source_mode = "rss_latest"
 ```
 
 `fetch_bodies = false` is the safe default. It mirrors archive metadata and stable URLs. Set it true only if you accept extra HTML fetching and parsing variance.
+
+Use `source_mode = "archive"` for a full initial mirror. Use `source_mode = "rss_latest"` for scheduled GitHub Actions watchers: it reads the built-in RSS feed, avoids the archive API path that can 403 from GitHub-hosted runners, and preserves existing mirrored raw posts while appending feed-discovered posts. RSS is intentionally a latest-post source, not a comprehensive historical source.
 
 ## Completeness gate
 

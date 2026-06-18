@@ -35,6 +35,7 @@ def load_config(path: Path) -> MirrorConfig:
         block_id=data.get("block_id"),
         fetch_bodies=parse_bool(data.get("fetch_bodies", False)),
         source_id_prefix=str(data.get("source_id_prefix", "s01-substack")),
+        source_mode=str(data.get("source_mode", "archive")),
     )
 
 
@@ -46,6 +47,7 @@ def write_config(path: Path, config: MirrorConfig) -> None:
         f'block_id = "{block_id}"\n'
         f'fetch_bodies = {str(config.fetch_bodies).lower()}\n'
         f'source_id_prefix = "{config.source_id_prefix}"\n'
+        f'source_mode = "{config.source_mode}"\n'
     )
     path.write_text(body)
 
@@ -59,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--out", default="mirror")
     init.add_argument("--block-id", default="substack-mirror")
     init.add_argument("--fetch-bodies", action="store_true")
+    init.add_argument("--source-mode", choices=["archive", "rss_latest"], default="archive")
     init.add_argument("--config", default="substack-block.toml")
 
     m = sub.add_parser("mirror", help="Mirror a publication now")
@@ -67,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--block-id")
     m.add_argument("--fetch-bodies", action="store_true")
     m.add_argument("--source-id-prefix", default="s01-substack")
+    m.add_argument("--source-mode", choices=["archive", "rss_latest"], default="archive")
     m.add_argument("--json", action="store_true")
 
     w = sub.add_parser("watch", help="Run mirror from TOML config")
@@ -90,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
                 out=args.out,
                 block_id=args.block_id,
                 fetch_bodies=args.fetch_bodies,
+                source_mode=args.source_mode,
             )
             write_config(Path(args.config), config)
             print(f"wrote {args.config}")
@@ -101,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                 block_id=args.block_id,
                 fetch_bodies=args.fetch_bodies,
                 source_id_prefix=args.source_id_prefix,
+                source_mode=args.source_mode,
             )
             result = mirror(config)
             if args.json:

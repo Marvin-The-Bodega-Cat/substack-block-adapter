@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import email.utils
 import json
 import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import timezone
 from html.parser import HTMLParser
 from typing import Any
 
 
-USER_AGENT = "substack-block-adapter/0.1 (+https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
+USER_AGENT = "Mozilla/5.0 (compatible; substack-block-adapter/0.2; +https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
 
 
 class FetchError(RuntimeError):
@@ -102,6 +104,63 @@ def fetch_sitemap_post_urls(publication: str) -> list[str]:
             if "/p/" in urllib.parse.urlparse(u).path:
                 urls.append(canonicalize_post_url(u))
     return sorted(set(urls))
+
+
+def first_text(element: ET.Element, names: tuple[str, ...]) -> str | None:
+    for child in element.iter():
+        local = child.tag.rsplit("}", 1)[-1]
+        if local in names and child.text:
+            return child.text.strip()
+    return None
+
+
+def rss_date_to_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except Exception:
+        return value
+
+
+def fetch_feed(publication: str) -> ArchiveResult:
+    """Fetch Substack's built-in RSS feed as a latest-post source.
+
+    RSS is intentionally not comprehensive; Substack commonly exposes only the
+    latest items. Use it for watchers, not for the initial full archive cut.
+    """
+    publication = normalize_publication(publication)
+    xml_text = get_text(f"{publication}/feed")
+    root = ET.fromstring(xml_text)
+    posts: list[dict[str, Any]] = []
+    for item in root.iter():
+        if item.tag.rsplit("}", 1)[-1] != "item":
+            continue
+        link = first_text(item, ("link",))
+        title = first_text(item, ("title",)) or "Untitled"
+        description = first_text(item, ("description",)) or ""
+        pub_date = rss_date_to_iso(first_text(item, ("pubDate",)))
+        guid = first_text(item, ("guid",)) or link or title
+        content = first_text(item, ("encoded",))
+        if not link:
+            continue
+        canonical = canonicalize_post_url(link)
+        slug = canonical.rstrip("/").split("/")[-1]
+        posts.append({
+            "id": guid,
+            "title": title,
+            "subtitle": description,
+            "description": description,
+            "slug": slug,
+            "canonical_url": canonical,
+            "post_date": pub_date,
+            "body_html": content,
+            "source_mode": "rss_latest",
+        })
+    return ArchiveResult(posts=posts, offset_probe=[{"offset": 0, "returned": len(posts), "new": len(posts)}])
 
 
 def canonicalize_post_url(url: str) -> str:

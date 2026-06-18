@@ -26,6 +26,7 @@ class MirrorConfig:
     block_id: str | None = None
     fetch_bodies: bool = False
     source_id_prefix: str = "s01-substack"
+    source_mode: str = "archive"
 
     def normalized_for_hash(self) -> dict[str, Any]:
         return {
@@ -34,4 +35,5 @@ class MirrorConfig:
             "block_id": self.block_id,
             "fetch_bodies": self.fetch_bodies,
             "source_id_prefix": self.source_id_prefix,
+            "source_mode": self.source_mode,
         }

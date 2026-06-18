@@ -14,6 +14,7 @@ from .substack import (
     canonicalize_post_url,
     fetch_archive,
     fetch_body_text,
+    fetch_feed,
     fetch_sitemap_post_urls,
     normalize_publication,
     post_url,
@@ -95,12 +96,56 @@ def source_text(post: dict[str, Any], body_text: str | None) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def load_existing_raw_posts(out: Path, publication: str) -> list[dict[str, Any]]:
+    raw_dir = out / "raw"
+    if not raw_dir.exists():
+        return []
+    posts: list[dict[str, Any]] = []
+    for path in sorted(raw_dir.glob("*.json")):
+        try:
+            post = json.loads(path.read_text())
+        except Exception:
+            continue
+        if isinstance(post, dict):
+            try:
+                # Only keep objects that can be resolved to a post URL.
+                post_url(publication, post)
+            except Exception:
+                continue
+            posts.append(post)
+    return posts
+
+
+def merge_posts_by_url(publication: str, base: list[dict[str, Any]], updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_url: dict[str, dict[str, Any]] = {}
+    for post in base:
+        by_url[canonicalize_post_url(post_url(publication, post))] = post
+    for post in updates:
+        url = canonicalize_post_url(post_url(publication, post))
+        if url not in by_url:
+            by_url[url] = post
+    return list(by_url.values())
+
+
+def fetch_posts_for_config(config: MirrorConfig, publication: str, out: Path) -> tuple[list[dict[str, Any]], list[dict[str, int]], str, bool]:
+    mode = (config.source_mode or "archive").strip().lower().replace("-", "_")
+    if mode == "archive":
+        archive = fetch_archive(publication)
+        return archive.posts, archive.offset_probe, "archive", bool(archive.offset_probe and archive.offset_probe[-1]["new"] == 0)
+    if mode in {"rss", "rss_latest", "feed"}:
+        feed = fetch_feed(publication)
+        existing = load_existing_raw_posts(out, publication)
+        merged = merge_posts_by_url(publication, existing, feed.posts)
+        return merged, feed.offset_probe, "rss_latest", True
+    raise ValueError(f"unknown source_mode {config.source_mode!r}; expected 'archive' or 'rss_latest'")
+
+
 def mirror(config: MirrorConfig) -> dict[str, Any]:
     publication = normalize_publication(config.publication)
     out = Path(config.out)
     out.mkdir(parents=True, exist_ok=True)
     generated_at = now_iso()
-    archive = fetch_archive(publication)
+    posts, source_probe, source_mode, source_terminated = fetch_posts_for_config(config, publication, out)
 
     sitemap_urls: list[str] = []
     sitemap_error: str | None = None
@@ -115,7 +160,7 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
     body_errors: list[dict[str, str]] = []
 
     sorted_posts = sorted(
-        archive.posts,
+        posts,
         key=lambda p: (post_timestamp(p) or "", str(p.get("id") or "")),
         reverse=False,
     )
@@ -163,7 +208,7 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
             "markdown_path": f"posts/{md_name}",
         })
 
-    api_urls = sorted({canonicalize_post_url(post_url(publication, p)) for p in archive.posts})
+    api_urls = sorted({canonicalize_post_url(post_url(publication, p)) for p in posts})
     api_set = set(api_urls)
     sitemap_set = set(sitemap_urls)
     block_id = config.block_id or slugify(publication.replace("https://", "").replace(".", "-"))
@@ -173,7 +218,7 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
         "block_id": block_id,
         "title": f"Substack mirror: {publication}",
         "created_at": generated_at,
-        "source_adapter": "substack-block-adapter@0.1.0",
+        "source_adapter": "substack-block-adapter@0.2.0",
         "source_config_fingerprint": fingerprint,
         "source_config": config.normalized_for_hash(),
         "records": [r.to_dict() for r in records],
@@ -182,7 +227,10 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
         "schema_version": "substack.scrape_completeness.v1",
         "publication": publication,
         "generated_at": generated_at,
-        "total_api_posts": len(archive.posts),
+        "source_mode": source_mode,
+        "total_api_posts": len(posts) if source_mode == "archive" else None,
+        "total_source_posts": len(posts),
+        "latest_feed_posts": source_probe[0]["returned"] if source_mode == "rss_latest" and source_probe else None,
         "date_range": {
             "min": min([r.timestamp for r in records if r.timestamp], default=None),
             "max": max([r.timestamp for r in records if r.timestamp], default=None),
@@ -193,20 +241,26 @@ def mirror(config: MirrorConfig) -> dict[str, Any]:
         "sitemap_missing_from_api_count": len(sitemap_set - api_set) if sitemap_urls else None,
         "api_missing_from_sitemap_sample": sorted(api_set - sitemap_set)[:10] if sitemap_urls else [],
         "sitemap_missing_from_api_sample": sorted(sitemap_set - api_set)[:10] if sitemap_urls else [],
-        "offset_probe": archive.offset_probe,
-        "terminated_on_zero_new_batch": bool(archive.offset_probe and archive.offset_probe[-1]["new"] == 0),
+        "source_probe": source_probe,
+        "offset_probe": source_probe if source_mode == "archive" else [],
+        "terminated_on_zero_new_batch": source_terminated if source_mode == "archive" else None,
+        "rss_latest_gate_passed": source_mode == "rss_latest" and bool(source_probe),
         "fetch_bodies": config.fetch_bodies,
         "fetched_bodies": fetched_bodies,
         "body_errors": body_errors[:20],
         "block_path": "block.json",
         "index_path": "index.json",
     }
-    complete = (
-        report["terminated_on_zero_new_batch"]
-        and sitemap_urls
-        and report["api_missing_from_sitemap_count"] == 0
-        and report["sitemap_missing_from_api_count"] == 0
-    )
+    if source_mode == "archive":
+        complete = (
+            report["terminated_on_zero_new_batch"]
+            and sitemap_urls
+            and report["api_missing_from_sitemap_count"] == 0
+            and report["sitemap_missing_from_api_count"] == 0
+        )
+    else:
+        # RSS is a latest-post watcher source, not a comprehensive source.
+        complete = bool(report["rss_latest_gate_passed"])
     report["completeness_gate_passed"] = bool(complete)
 
     index = {
