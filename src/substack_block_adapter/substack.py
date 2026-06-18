@@ -12,7 +12,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 
-USER_AGENT = "Mozilla/5.0 (compatible; substack-block-adapter/0.2; +https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
+USER_AGENT = "Mozilla/5.0 (compatible; substack-block-adapter/0.2.1; +https://github.com/Marvin-The-Bodega-Cat/substack-block-adapter)"
 
 
 class FetchError(RuntimeError):
@@ -133,7 +133,21 @@ def fetch_feed(publication: str) -> ArchiveResult:
     latest items. Use it for watchers, not for the initial full archive cut.
     """
     publication = normalize_publication(publication)
-    xml_text = get_text(f"{publication}/feed")
+    feed_url = f"{publication}/feed"
+    try:
+        xml_text = get_text(feed_url)
+        return parse_feed_xml(xml_text)
+    except Exception as direct_exc:
+        # GitHub-hosted runners can receive 403s from Substack even for /feed.
+        # Jina Reader can still fetch the public feed and returns stable markdown
+        # containing post URLs plus pubDate lines. Use it only as a fallback.
+        try:
+            return parse_jina_feed_markdown(get_text(jina_reader_url(feed_url)))
+        except Exception as fallback_exc:
+            raise FetchError(f"failed to fetch RSS feed {feed_url}: direct={direct_exc}; jina_fallback={fallback_exc}") from fallback_exc
+
+
+def parse_feed_xml(xml_text: str) -> ArchiveResult:
     root = ET.fromstring(xml_text)
     posts: list[dict[str, Any]] = []
     for item in root.iter():
@@ -159,6 +173,46 @@ def fetch_feed(publication: str) -> ArchiveResult:
             "post_date": pub_date,
             "body_html": content,
             "source_mode": "rss_latest",
+        })
+    return ArchiveResult(posts=posts, offset_probe=[{"offset": 0, "returned": len(posts), "new": len(posts)}])
+
+
+def jina_reader_url(url: str) -> str:
+    return "https://r.jina.ai/http://" + url
+
+
+def title_from_slug(url: str) -> str:
+    slug = canonicalize_post_url(url).rstrip("/").split("/")[-1]
+    return " ".join(part.capitalize() for part in slug.split("-") if part) or "Untitled"
+
+
+def parse_jina_feed_markdown(text: str) -> ArchiveResult:
+    posts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    lines = [line.strip() for line in text.splitlines()]
+    for i, line in enumerate(lines):
+        match = re.search(r"https?://[^\s)\]]+/p/[^\s)\]]+", line)
+        if not match:
+            continue
+        canonical = canonicalize_post_url(match.group(0))
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        pub_date = None
+        for candidate in lines[i + 1 : i + 6]:
+            if re.search(r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),", candidate):
+                pub_date = rss_date_to_iso(candidate)
+                break
+        slug = canonical.rstrip("/").split("/")[-1]
+        posts.append({
+            "id": canonical,
+            "title": title_from_slug(canonical),
+            "subtitle": "",
+            "description": "",
+            "slug": slug,
+            "canonical_url": canonical,
+            "post_date": pub_date,
+            "source_mode": "rss_latest_jina_fallback",
         })
     return ArchiveResult(posts=posts, offset_probe=[{"offset": 0, "returned": len(posts), "new": len(posts)}])
 

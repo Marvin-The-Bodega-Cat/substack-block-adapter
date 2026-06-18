@@ -5,7 +5,7 @@ import json
 from substack_block_adapter.cli import main
 from substack_block_adapter.models import MirrorConfig
 from substack_block_adapter.mirror import mirror
-from substack_block_adapter.substack import fetch_feed, normalize_publication, slugify
+from substack_block_adapter.substack import fetch_feed, normalize_publication, parse_jina_feed_markdown, slugify
 
 
 def test_normalize_publication():
@@ -107,6 +107,26 @@ def test_fetch_feed_parses_substack_rss(monkeypatch):
     assert post["canonical_url"] == "https://demo.substack.com/p/latest-post"
     assert post["post_date"] == "2026-06-15T12:32:55Z"
     assert result.offset_probe == [{"offset": 0, "returned": 1, "new": 1}]
+
+
+def test_jina_feed_markdown_fallback_parser():
+    text = """Title:
+
+URL Source: https://demo.substack.com/feed
+
+Markdown Content:
+### [](https://demo.substack.com/p/fallback-post)
+
+[https://demo.substack.com/p/fallback-post](https://demo.substack.com/p/fallback-post)
+
+Mon, 15 Jun 2026 12:32:55 GMT
+"""
+    result = parse_jina_feed_markdown(text)
+    assert len(result.posts) == 1
+    post = result.posts[0]
+    assert post["canonical_url"] == "https://demo.substack.com/p/fallback-post"
+    assert post["title"] == "Fallback Post"
+    assert post["post_date"] == "2026-06-15T12:32:55Z"
 
 
 def test_rss_latest_preserves_existing_full_mirror_and_adds_new_post(tmp_path, monkeypatch):

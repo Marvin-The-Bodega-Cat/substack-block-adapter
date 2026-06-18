@@ -86,7 +86,7 @@ source_mode = "rss_latest"
 
 `fetch_bodies = false` is the safe default. It mirrors archive metadata and stable URLs. Set it true only if you accept extra HTML fetching and parsing variance.
 
-Use `source_mode = "archive"` for a full initial mirror. Use `source_mode = "rss_latest"` for scheduled GitHub Actions watchers: it reads the built-in RSS feed, avoids the archive API path that can 403 from GitHub-hosted runners, and preserves existing mirrored raw posts while appending feed-discovered posts. RSS is intentionally a latest-post source, not a comprehensive historical source.
+Use `source_mode = "archive"` for a full initial mirror. Use `source_mode = "rss_latest"` for scheduled GitHub Actions watchers: it reads the built-in RSS feed, avoids the archive API path that can 403 from GitHub-hosted runners, and preserves existing mirrored raw posts while appending feed-discovered posts. If Substack also blocks `/feed` from a hosted runner, the adapter falls back to Jina Reader for the same public feed. RSS is intentionally a latest-post source, not a comprehensive historical source.
 
 ## Completeness gate
 
